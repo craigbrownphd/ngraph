@@ -44,6 +44,8 @@ class serialized_graph_files : public ::testing::TestWithParam<string>
 {
 public:
     void compare_results(NodeVector& result_nodes,
+                         map<std::shared_ptr<ngraph::Node>, std::shared_ptr<ngraph::Node>>&
+                             isolated_node_to_original,
                          vector<shared_ptr<runtime::Tensor>> ref_results,
                          vector<shared_ptr<runtime::Tensor>> bk_results)
     {
@@ -52,20 +54,34 @@ public:
             const shared_ptr<runtime::Tensor>& ref_data = ref_results.at(i);
             const shared_ptr<runtime::Tensor>& bk_data = bk_results.at(i);
 
-            cout << "Comparing results for " << result_nodes.at(i)->get_name() << endl;
-            if (auto node = dynamic_pointer_cast<op::GetOutputElement>(result_nodes.at(i)))
+            std::shared_ptr<ngraph::Node> result_node = result_nodes.at(i);
+            cout << "Comparing results for ";
+            auto cloned_from = isolated_node_to_original.find(result_node);
+            if (cloned_from != isolated_node_to_original.end())
             {
-                cout << "  Parent node: ";
-                for (auto& p : node->get_arguments())
+                cout << cloned_from->second->get_name() << " a clone run in isolation as "
+                     << result_node->get_name() << endl;
+            }
+            else
+            {
+                cout << result_node->get_name() << " run with original graph dependencies" << endl;
+                if (result_node->get_arguments().size() > 0)
                 {
-                    cout << " " << p->get_name() << endl;
-                    cout << "   nargs: " << p->get_arguments().size() << endl;
+                    cout << "  inputs:" << endl;
+                    for (auto& p : result_node->get_arguments())
+                    {
+                        cout << "    " << p->get_name() << " " << p->get_element_type() << endl;
+                    }
                 }
             }
 
             ASSERT_EQ(ref_data->get_element_type(), bk_data->get_element_type());
             ASSERT_EQ(ref_data->get_element_count(), bk_data->get_element_count());
             ASSERT_EQ(ref_data->get_shape(), bk_data->get_shape());
+
+            cout << "  output type:       " << ref_data->get_element_type() << endl;
+            cout << "  output shape:      " << ref_data->get_shape() << endl;
+            cout << "  output # elements: " << ref_data->get_element_count() << endl;
 
             element::Type et = ref_data->get_element_type();
             if (et == element::boolean)
@@ -174,6 +190,8 @@ NGRAPH_TEST_P(${BACKEND_NAME}, serialized_graph_files, compare_backends_with_gra
     shared_ptr<Function> func = ngraph::deserialize(ss);
 
     NodeVector new_results;
+    map<std::shared_ptr<ngraph::Node>, std::shared_ptr<ngraph::Node>> isolated_node_to_original;
+    op::ParameterVector new_parameters = func->get_parameters();
     for (auto n : func->get_ordered_ops())
     {
         // Don't include op::Results otherwise Function c-tor will complain
@@ -182,11 +200,33 @@ NGRAPH_TEST_P(${BACKEND_NAME}, serialized_graph_files, compare_backends_with_gra
         {
             // place conditionals here if you want to only make certain ops an output/result node
             new_results.push_back(n);
+
+            NodeVector isolated_op_args;
+            for (auto arg : n->get_arguments())
+            {
+                bool is_broadcast_of_constant =
+                    ((arg->description() == "Broadcast") && (arg->get_arguments().size() > 0) &&
+                     (arg->get_arguments()[0]->is_constant()));
+                if (arg->is_constant() || is_broadcast_of_constant)
+                {
+                    isolated_op_args.push_back(arg);
+                }
+                else
+                {
+                    auto isolated_param =
+                        make_shared<op::Parameter>(arg->get_element_type(), arg->get_shape());
+                    isolated_op_args.push_back(isolated_param);
+                    new_parameters.push_back(isolated_param);
+                }
+            }
+            auto isolated_op = n->copy_with_new_args(isolated_op_args);
+            new_results.push_back(isolated_op);
+            isolated_node_to_original[isolated_op] = n;
         }
     }
 
-    //no need to include original results they are subsumed by new_results
-    auto new_func = make_shared<Function>(new_results, func->get_parameters());
+    // No need to include original results they are subsumed by new_results
+    auto new_func = make_shared<Function>(new_results, new_parameters);
 
     auto ref_func = clone_function(*new_func);
     auto bk_func = clone_function(*new_func);
@@ -246,7 +286,7 @@ NGRAPH_TEST_P(${BACKEND_NAME}, serialized_graph_files, compare_backends_with_gra
     ref->call_with_validate(ref_func, ref_results, ref_args);
     backend->call_with_validate(bk_func, bk_results, bk_args);
 
-    compare_results(new_results, ref_results, bk_results);
+    compare_results(new_results, isolated_node_to_original, ref_results, bk_results);
 }
 
 // The set of graphs tested is not currently significant. These graphs were
@@ -276,5 +316,6 @@ NGRAPH_INSTANTIATE_TEST_CASE_P(
                     "tensorflow/resnet8/"
                     "tf_function_cluster_8[_XlaCompiledKernel=true,_XlaNumConstantArgs=2,_"
                     "XlaNumResourceArgs=0].v28.json"));
+
 
 #endif // skipping tests due to backend
