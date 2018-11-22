@@ -40,3 +40,46 @@ index 83ed499a..3dc4fcf4 100644
  set_property(TARGET ${TARGET_NAME} PROPERTY CXX_STANDARD 11)
  set_property(TARGET ${TARGET_NAME} PROPERTY CXX_STANDARD_REQUIRED ON)
  set_property(TARGET ${TARGET_NAME} PROPERTY VERSION "${PROJECT_VERSION}.0")
+diff --git a/cmake/OpenMP.cmake b/cmake/OpenMP.cmake
+index f9c3620e..f759d492 100644
+--- a/cmake/OpenMP.cmake
++++ b/cmake/OpenMP.cmake
+@@ -106,6 +106,7 @@ if (MKLDNN_THREADING MATCHES "OMP")
+     else()
+         message(${_omp_severity} "OpenMP library could not be found. "
+             "Proceeding might lead to highly sub-optimal performance.")
++        return()
+     endif()
+ 
+     if (MKLDNN_THREADING STREQUAL "OMP:COMP")
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 83ed499a..edf0d74d 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -44,6 +44,13 @@ append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_NOWARN_FLAGS}")
+ append(CMAKE_C_FLAGS "${CMAKE_CCXX_SANITIZER_FLAGS}")
+ append(CMAKE_CXX_FLAGS "${CMAKE_CCXX_SANITIZER_FLAGS}")
+ 
++if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "GNU")
++    if(CMAKE_CXX_COMPILER_VERSION VERSION_GREATER 8.0 OR CMAKE_CXX_COMPILER_VERSION VERSION_EQUAL 8.0)
++        append(CMAKE_CXX_FLAGS "-Wno-stringop-truncation")
++        append(CMAKE_CXX_FLAGS "-Wno-stringop-overflow")
++    endif()
++endif()
++
+ if(NOT MKLDNN_VERBOSE)
+     add_definitions(-DDISABLE_VERBOSE)
+ endif()
+diff --git a/src/common/utils.hpp b/src/common/utils.hpp
+index aff4efc8..bddb4073 100644
+--- a/src/common/utils.hpp
++++ b/src/common/utils.hpp
+@@ -54,7 +54,7 @@ static_assert(sizeof(void*) == 8, "Intel(R) MKL-DNN supports 64 bit only");
+ #define __PRETTY_FUNCTION__ __FUNCSIG__
+ #endif
+ 
+-#ifdef __APPLE__
++#if defined(__apple_build_version__) && (__apple_build_version__ < 8000000)
+ // older XCode doesn't support thread_local
+ #define THREAD_LOCAL __thread
+ #else
